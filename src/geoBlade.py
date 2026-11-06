@@ -66,9 +66,6 @@ def airfoil_area(x, y):
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
         
-    # Fórmula de la Lazada (Shoelace) usando operaciones vectorizadas de NumPy.
-    # np.roll(y, 1) desplaza el array para emparejar (x_i, y_{i+1}) y (y_i, x_{i+1}),
-    # incluyendo el salto implícito del último elemento al primero.
     area = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
     return area
 
