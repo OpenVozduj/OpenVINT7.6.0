@@ -3,11 +3,6 @@ from sklearn.decomposition import PCA
 from scipy.interpolate import CubicSpline, interpn
 
 def setup_aero_surrogate(n_components_cy=5, n_components_cx=8):
-    """
-    Entrena el modelo sustituto usando PCA para AMBOS coeficientes (CY y CX).
-    Nota: CX suele requerir más componentes que CY porque su campo es más 
-    complejo (cubetas de arrastre, stall, etc.).
-    """
     alpha_grid = np.arange(-10, 11, 1) 
     Re_grid = np.array([50000, 150000, 250000, 350000])
     yt_array = np.load('src/yt_ref.npy')
@@ -26,17 +21,11 @@ def setup_aero_surrogate(n_components_cy=5, n_components_cx=8):
     N_Re = len(Re_grid)
     N_alpha = len(alpha_grid)
     
-    # ==========================================
-    # PCA para CY (Sustentación)
-    # ==========================================
     CY_flat = CY_tensor.reshape(len(yt_array), -1)
     pca_cy = PCA(n_components=n_components_cy)
     scores_cy = pca_cy.fit_transform(CY_flat)
     splines_cy = [CubicSpline(yt_array, scores_cy[:, i]) for i in range(n_components_cy)]
     
-    # ==========================================
-    # PCA para CX (Arrastre) - ¡LA CORRECCIÓN CLAVE!
-    # ==========================================
     CX_flat = CX_tensor.reshape(len(yt_array), -1)
     pca_cx = PCA(n_components=n_components_cx)
     scores_cx = pca_cx.fit_transform(CX_flat)
@@ -66,12 +55,10 @@ def reconstruct_aero_fields(model_state, yt_batch):
     yt_batch = np.atleast_1d(yt_batch)
     N = len(yt_batch)
     
-    # 1. Reconstruir CY
     scores_cy_new = np.column_stack([spline(yt_batch) for spline in model_state['splines_cy']])
     CY_flat_new = scores_cy_new @ model_state['pca_cy'].components_ + model_state['pca_cy'].mean_
     CY_batch = CY_flat_new.reshape(N, model_state['N_Re'], model_state['N_alpha'])
     
-    # 2. Reconstruir CX 
     scores_cx_new = np.column_stack([spline(yt_batch) for spline in model_state['splines_cx']])
     CX_flat_new = scores_cx_new @ model_state['pca_cx'].components_ + model_state['pca_cx'].mean_
     CX_batch = CX_flat_new.reshape(N, model_state['N_Re'], model_state['N_alpha'])
@@ -141,9 +128,6 @@ def read_aero_values(CY, CX, SL, A0, alpha_targets, re_targets):
     return cl, cd, sl, a0
 
 def getCoeffsFast(CY_batch, CX_batch, SL_batch, A0_batch, Re_flat, alpha_flat, N_r):
-    """[M-6] Convención correcta: CY_batch[j] = tabla de la estación radial j.
-    El plano está organizado psi-mayor, así que se itera por estación con
-    rebanadas escalonadas j::N_r."""
     N_tot = len(Re_flat)
     N_psi = int(N_tot / N_r)
     cl = np.zeros(N_tot); cd = np.zeros(N_tot)
@@ -156,21 +140,16 @@ def getCoeffsFast(CY_batch, CX_batch, SL_batch, A0_batch, Re_flat, alpha_flat, N
         cl[idx] = cl_j; cd[idx] = cd_j; sl[idx] = sl_j; a0[idx] = a0_j
     return cl, cd, sl, a0
 
-# ==============================================================================
-# CORRECCIÓN 3D FÍSICA: Du-Selig (retardo de pérdida rotacional)
-# + penalización de CD dependiente de la geometría local
-# ==============================================================================
 def apply_3d_corrections(cl_2d, cd_2d, slope, alpha0, alpha_deg, r, R, c,
                          k_ds=0.5, k_cd=0.15):
-    cr = c / np.maximum(r, 0.05 * R)          # c/r local: la clave
+    cr = c / np.maximum(r, 0.05 * R)          
     f_ds = np.clip(k_ds * cr, 0.0, 1.0)
-    cl_p = slope * (alpha_deg - alpha0)       # sustentación adherida virtual
+    cl_p = slope * (alpha_deg - alpha0)       
     cl_3d = cl_2d + f_ds * (cl_p - cl_2d)
-    cd_3d = cd_2d * (1.0 + k_cd * cr)         # reemplaza al x1.15 global
+    cd_3d = cd_2d * (1.0 + k_cd * cr)         
     return cl_3d, cd_3d
 
 def calculateClimbMetrics(Thrust, Power, V_axial, rho, R):
-    """FM hover-equivalente = T^1.5 / (P * sqrt(2*rho*A)). Índice comparativo."""
     A = np.pi * R**2
     if Thrust > 0 and Power > 0:
         FM_hover_eq = (Thrust**1.5) / (Power * np.sqrt(2.0 * rho * A))
@@ -191,14 +170,10 @@ def calculate_prandtl_tip_loss(nB, r, R, phi_inflow):
     F_tip = (2.0 / np.pi) * np.arccos(np.exp(-f_tip))
     return np.maximum(F_tip, 0.001)
 
-# ==============================================================================
-# 4) CARGAS DE UN ROTOR (bloque unificado superior/inferior)
-# ==============================================================================
 def _rotor_loads(phi_geo_g, vi_radial, skewK, omega, w_wake_g,
                  V_axial, V_trans, psi_g, r_g, c_g, dr_g, rr, nu, rho,
                  nB, R, CY_batch, CX_batch, SL_batch, A0_batch, N_r,
                  k_ds, k_cd):
-    # Estela sesgada: primer armónico (Coleman): vi = vi0*(1 + K*(r/R)*sin(psi))
     f_psi = np.clip(1.0 + skewK * rr[None, :] * np.sin(psi_g), 0.15, None)
     Wa = V_axial + w_wake_g + vi_radial[None, :] * f_psi
     Wa = np.maximum(Wa, 0.05 * omega * R)
@@ -261,7 +236,6 @@ def TWQCoaxial_Oblique_Vectorized_Geo(n_min_u, n_min_l, nB, d, r, c_u, c_l,
     phi_l_g = np.tile(phi_l, (N_psi, 1))
     zero_wake = np.zeros((N_psi, N_r))
 
-    # Estado: solo 2 campos radiales
     vi_u = np.full(N_r, inducedVelocityGuess(V_axial, CT_guess, omega_u, R))
     vi_l_self = np.full(N_r, inducedVelocityGuess(V_axial, CT_guess, omega_l, R))
 
@@ -271,9 +245,6 @@ def TWQCoaxial_Oblique_Vectorized_Geo(n_min_u, n_min_l, nB, d, r, c_u, c_l,
     it = 0
 
     for it in range(1, max_iter + 1):
-        # =========================================================
-        # Geometría de estela: un tubo de corriente por estación
-        # =========================================================
         vi_u_c = np.maximum(vi_u, 1e-6)
         C_far = np.sqrt((V_axial + vi_u_c) / (V_axial + 2.0 * vi_u_c))
         C_z = 1.0 + (C_far - 1.0) * fz
@@ -288,18 +259,12 @@ def TWQCoaxial_Oblique_Vectorized_Geo(n_min_u, n_min_l, nB, d, r, c_u, c_l,
         ru_of_rl = np.interp(r, r_map, r)
         vi_wake_on_lower = np.interp(ru_of_rl, r, vi_wake_up)
 
-        # =========================================================
-        # Factores de sesgo (Coleman, primer armónico)
-        # =========================================================
         chi_u = np.arctan2(V_trans, V_axial + np.mean(vi_u))
         K_u = skew_gain * np.tan(0.5 * chi_u)
         chi_l = np.arctan2(V_trans, V_axial + np.mean(vi_l_self)
                            + 0.5 * np.mean(vi_wake_on_lower))
         K_l = skew_gain * np.tan(0.5 * chi_l)
 
-        # =========================================================
-        # Cargas
-        # =========================================================
         res_u = _rotor_loads(phi_u_g, vi_u, K_u, omega_u, zero_wake,
                              V_axial, V_trans, psi_g, r_g, c_u_g, dr_g, rr, nu,
                              rho, nB, R, CY_batch_u, CX_batch_u, SL_batch_u, A0_batch_u,
@@ -315,9 +280,6 @@ def TWQCoaxial_Oblique_Vectorized_Geo(n_min_u, n_min_l, nB, d, r, c_u, c_l,
                              rho, nB, R, CY_batch_l, CX_batch_l, SL_batch_l, A0_batch_l,
                              N_r, k_ds, k_cd)
 
-        # =========================================================
-        # Actualización de estados (momentum por tubo local)
-        # =========================================================
         dA = 2.0 * np.pi * r * dr
         t_u = V_axial**2 / 4.0 + res_u['dN_avg'] / (2.0 * rho * dA + 1e-9)
         vi_u_req = -V_axial / 2.0 + np.sqrt(np.maximum(t_u, 0.0))
@@ -351,9 +313,6 @@ def TWQCoaxial_Oblique_Vectorized_Geo(n_min_u, n_min_l, nB, d, r, c_u, c_l,
                          rho, nB, R, CY_batch_l, CX_batch_l, SL_batch_l, A0_batch_l,
                          N_r, k_ds, k_cd)
 
-    # =========================================================
-    # Resultados
-    # =========================================================
     Thrust_u = float(np.sum(res_u['dN_avg']))
     Thrust_l = float(np.sum(res_l['dN_avg']))
     Thrust_total = Thrust_u + Thrust_l
@@ -376,7 +335,6 @@ def TWQCoaxial_Oblique_Vectorized_Geo(n_min_u, n_min_l, nB, d, r, c_u, c_l,
     FM_global_raw = (Thrust_total**1.5) / (Power_total * np.sqrt(2.0 * rho * A))
     FM_global_coaxial = FM_global_raw / np.sqrt(2.0)
 
-    # [M-8] Métricas honestas para flujo oblicuo (contrato v2.0)
     CT_total = Thrust_total / (rho * V_tip**2 * A)
     CP_total = Power_total / (rho * V_tip**3 * A)
     PL_total = Thrust_total / Power_total
