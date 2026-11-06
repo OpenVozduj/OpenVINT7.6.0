@@ -6,7 +6,6 @@ from src import electricFun as ef
 import os
 import json
 import math
-# import concurrent.futures
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -202,43 +201,29 @@ def objectiveFunction(N, Pg, nameBlade, flow, paramBEMT, mass, motor):
     return TWQg
 
 def compute_fitness(mg, Tg, Tmin, Qg_u, Qg_l, Qtol):
-    """
-    Calcula fitness con manejo de restricciones tipo Deb (2000).
-    - Factibles: fitness = Wg (valor real, sin normalizar)
-    - Infactibles: fitness = peor_factible + penalización (siempre peor que cualquier factible)
-    """
-    # 1. Calcular violaciones de restricciones
     g1 = np.maximum(0, (Tmin - Tg) / Tmin)
     g2 = np.maximum(0, np.abs(Qg_u - Qg_l) - Qtol)
-    cv = g1 + g2  # constraint violation total
-    
+    cv = g1 + g2  
     feasible = cv <= 1e-12
     
     fitness = np.full_like(mg, np.inf, dtype=float)
     
     if np.any(feasible):
-        # --- Factibles: fitness = Wg crudo (estable entre generaciones) ---
         fitness[feasible] = mg[feasible]
         
         if np.any(~feasible):
-            # --- Infactibles: SIEMPRE peores que el peor factible ---
             worst_feasible_mg = np.max(mg[feasible])
             best_feasible_mg = np.min(mg[feasible])
             spread = worst_feasible_mg - best_feasible_mg
             if spread < 1e-6:
                 spread = abs(worst_feasible_mg) * 0.1  # fallback
             
-            # Normalizar cv de infactibles a [0, 1]
             cv_inf = cv[~feasible]
             max_cv = np.max(cv_inf)
             cv_norm = cv_inf / max_cv if max_cv > 1e-12 else np.zeros_like(cv_inf)
             
-            # Fitness infactible = peor_factible + spread + cv_norm * spread
-            # Rango infactibles: [worst + spread, worst + 2*spread]
-            # Siempre > cualquier factible (que está en [best, worst])
             fitness[~feasible] = worst_feasible_mg + spread + cv_norm * spread
     else:
-        # --- No hay factibles: comparar solo por violación ---
         max_cv = np.max(cv)
         if max_cv > 1e-12:
             fitness = cv / max_cv
@@ -313,10 +298,8 @@ def mutation(C, N, Omega, g, G, eta_m_min=5, eta_m_max=10):
     
     for i in range(N):
         p = C[i]
-        m = np.copy(p) # Copiamos el padre, solo mutaremos algunos genes
-        
+        m = np.copy(p) 
         for j in range(D):
-            # Solo mutar el gen si cae dentro de la probabilidad pm
             if np.random.rand() < pm:
                 r = np.random.uniform()
                 if r < 0.5:
@@ -326,10 +309,8 @@ def mutation(C, N, Omega, g, G, eta_m_min=5, eta_m_max=10):
                     
                 m[j] = p[j] + delta * (Omega[j, 1] - Omega[j, 0])
                 
-        # Asegurar límites
         m = np.clip(m, Omega[:, 0], Omega[:, 1])
         
-        # Redondear variable discreta (índice 8) DESPUÉS del clip para asegurar que esté en rango
         m[0] = round(m[0]) 
         
         Q = np.vstack((Q, m))
